@@ -201,14 +201,24 @@ $(L_j, j) > (L_i, i)$.
 \end{lemma}
 
 \begin{proof}
-By hypothesis, $P_j$'s doorway begins after $P_i$'s doorway has completed. So
-every step of $P_j$'s doorway, including every read in its max-scan, happens
-after $P_i$'s write of $\texttt{label}[i] = L_i$ in line~(D2). Under SC, $P_j$'s
-read of $\texttt{label}[i]$ therefore returns $L_i$ (the most recent write,
-since $P_i$ writes $\texttt{label}[i]$ exactly once per lock acquisition and
-has not yet started a new acquisition). Hence
+By hypothesis, $P_j$'s doorway begins after $P_i$'s doorway has completed,
+so every step of $P_j$'s doorway---including every read in its max-scan---happens
+after $P_i$'s write of $\texttt{label}[i] = L_i$ in line~(D2).
+
+A subtle point: between $P_i$'s doorway completion and $P_j$'s read of
+$\texttt{label}[i]$, $P_i$ could in principle finish its critical section,
+unlock, and re-acquire the lock, writing a new label $L_i'$. That is fine,
+because labels in this formulation only ever \emph{grow}: each call to
+$\texttt{lock()}$ writes $\max(\ldots) + 1$, which is strictly larger than
+the previous value of $\texttt{label}[i]$. So at every time after $P_i$'s
+doorway completes, the current value of $\texttt{label}[i]$ is some
+$\ell \geq L_i$.
+
+Under SC, $P_j$'s read of $\texttt{label}[i]$ therefore returns some value
+$\ell \geq L_i$, and
 \[
-  L_j \;=\; \max(\ldots,L_i,\ldots) + 1 \;\geq\; L_i + 1 \;>\; L_i,
+  L_j \;=\; \max(\ldots,\ell,\ldots) + 1 \;\geq\; \ell + 1 \;\geq\; L_i + 1
+       \;>\; L_i,
 \]
 which gives $(L_j, j) > (L_i, i)$ regardless of the ids.
 \end{proof}
@@ -253,18 +263,24 @@ found, at some final test $k=i$, that the blocking condition is false:
 \[
   \neg\,\texttt{flag}[i] \;\;\lor\;\; (L_j, j) \,\leq\, (\texttt{label}[i], i).
 \]
+$P_j$'s final test for $k=i$ happens before $P_j$ enters its CS, hence at
+some time $T_{ji} < T$. Since $P_i$ has not unlocked by time $T$, $P_i$'s
+current acquisition is the same one labelled $L_i$ throughout $[T_{D_i},
+T]$, and in particular at $T_{ji}$. So whatever $P_j$ reads from
+$\texttt{label}[i]$ at $T_{ji}$ is some value $\ell$ that was written by
+$P_i$ at or before $T_{ji}$.
+
 The second disjunct, were $P_j$ to read the value $L_i$, would give
 $(L_j, j) \leq (L_i, i)$, contradicting Step~1. The same disjunct is
 false for any value $\ell \leq L_i$ that $P_j$ could read in
 $\texttt{label}[i]$, since then $(L_j, j) \leq (\ell, i) \leq (L_i, i)$
-again contradicts Step~1. (And $\ell \leq L_i$ for every value $P_j$ can
-read: in the Herlihy-Shavit formulation, $\texttt{label}[i]$ is never
-reset, so the writes by $P_i$'s successive acquisitions form a strictly
-increasing sequence; the current acquisition's $L_i$ is the maximum
-written so far, and any earlier read returns either $0$ or a strictly
-smaller previous label.) So the disjunct that must hold is the first
-one: $P_j$ observed $\texttt{flag}[i] = \texttt{false}$ at its final
-test for $k=i$.
+again contradicts Step~1. And $\ell \leq L_i$ for every value $P_j$ can
+read here: $\texttt{label}[i]$ is never reset, the successive writes form
+a strictly increasing sequence, and the writes happening at or before
+$T_{ji}$ are bounded above by $L_i$ (the current-acquisition write).
+
+So the disjunct that must hold is the first one: $P_j$ observed
+$\texttt{flag}[i] = \texttt{false}$ at its final test for $k=i$.
 
 \medskip
 \noindent\textbf{Step 3: $P_j$'s observation forces $D_j \to D_i$.}
@@ -410,23 +426,30 @@ $r=0$ in the terminology from Lecture~12. Suppose thread $A$ completes its
 doorway before thread $B$ starts its doorway ($D_A \to D_B$). By
 Lemma~\ref{lem:label-order}, $(L_A, A) < (L_B, B)$.
 
-We must show $A$ enters the CS no later than $B$ for these acquisitions. Two
-cases:
+Because $D_A \to D_B$, when $B$ enters its spin loop, $A$ has already
+finished \emph{its} doorway. So at the moment $B$ first checks $k=A$, $A$
+must be in one of three states:
 
 \begin{itemize}[nosep,leftmargin=2.2em]
-  \item $A$ has already entered (and possibly even left) the CS by the time $B$
-        starts spinning. Then trivially $A$ entered before $B$, and FCFS holds.
-  \item $A$ is still in the doorway-or-CS region when $B$ starts spinning.
-        Then $\texttt{flag}[A] = \texttt{true}$ continuously throughout
-        $B$'s relevant test, and $\texttt{label}[A] = L_A$, so $B$'s check for
-        $k=A$ reads $\texttt{flag}[A] = \texttt{true}$ together with
-        $(L_B, B) > (L_A, A)$, and $B$ blocks. $A$, on the other hand, either
-        already passed all its checks (so it is in the CS) or, when it
-        eventually checks $k=B$, sees $(L_A, A) < (L_B, B)$ and is therefore
-        not blocked by $B$. So $A$ enters the CS first.
+  \item \textbf{$A$ has already exited the CS} for this acquisition (i.e.,
+        $A$ has unlocked). Then $A$ entered the CS strictly before $B$ for
+        these acquisitions, so FCFS holds trivially.
+  \item \textbf{$A$ is currently in the CS}. Then $\texttt{flag}[A] =
+        \texttt{true}$ at $B$'s check, and $B$ reads
+        $(\texttt{label}[A], A) = (L_A, A) < (L_B, B)$, so $B$'s blocking
+        conjunction is true and $B$ waits. $A$ entered the CS before $B$
+        (since $B$ is still spinning), so FCFS holds.
+  \item \textbf{$A$ is also spinning}. Then $\texttt{flag}[A] = \texttt{true}$
+        and $\texttt{label}[A] = L_A$ at $B$'s check, so $B$ blocks on $A$ as
+        in the previous case. Conversely, when $A$ checks $k=B$, it sees
+        either $\texttt{flag}[B] = \texttt{false}$ (if it checks before $B$
+        even started its doorway---ruled out here since $D_B$ has begun)
+        or $(L_A, A) < (L_B, B)$, which makes the blocking conjunction
+        false. So $B$ never blocks $A$, while $A$ blocks $B$ until $A$
+        unlocks. $A$ enters the CS first.
 \end{itemize}
 
-In both cases $A$ enters before $B$: no later-arriving thread can overtake an
+In every case $A$ enters before $B$: no later-arriving thread can overtake an
 earlier one even once after the earlier thread has finished its doorway, which
 is exactly bounded waiting with $r=0$.
 
@@ -443,9 +466,11 @@ are more complex. (2)~Each lock/unlock requires $O(n)$ reads, making it
 impractical for large $n$. (3)~The algorithm uses $O(n)$ shared registers with
 a ``single-writer'' property: each thread writes only to its own
 \ppinline{flag[i]} and \ppinline{label[i]}, while others only read them.
-(4)~The algorithm assumes sequential consistency; weaker models such as TSO
-require an explicit store-load fence between each thread's doorway writes
-and its spin-loop reads (see the TSO exercise below).
+(4)~The algorithm assumes sequential consistency; on TSO (x86) the algorithm
+needs explicit store-load fences---one right after line~(D1) and one
+between the doorway and the spin loop---to ensure each thread's flag and
+label become globally visible before it inspects others' state (see the
+TSO exercise below).
 \end{ppnote}
 
 \section{Exercises}
@@ -562,27 +587,53 @@ and its spin-loop reads (see the TSO exercise below).
 
   \medskip
   \noindent\textit{Answer.}
-  Not directly, and the broken ordering is more specific than ``stores aren't
-  visible.'' Under TSO, stores by a single thread are made globally visible in
-  program order: store-store ordering is preserved for free. So the proof's
-  reliance on $\texttt{flag}[i] = \texttt{true}$ becoming visible \emph{before}
-  $\texttt{label}[i] = L_i$ does \emph{not} require a fence between (D1) and
-  (D2).
+  Not directly. The broken ordering is more specific than ``stores aren't
+  visible.'' Under TSO, every thread's own stores propagate to global memory
+  in program order, so store-store ordering between
+  $\texttt{flag}[i] = \texttt{true}$ and $\texttt{label}[i] = L_i$ is
+  preserved automatically: any other thread that observes $L_i$ will also
+  observe $\texttt{flag}[i] = \texttt{true}$. What TSO does \emph{not}
+  preserve is store-load ordering: a thread's own pending store can sit in
+  its store buffer while the same thread issues later loads, and other CPUs
+  can continue to observe the old memory value until the buffer drains.
 
-  What TSO does \emph{not} preserve is store-load ordering: a thread's own
-  pending stores can sit in its store buffer while the same thread issues
-  later loads, and other CPUs may keep observing the old value until the
-  buffer drains. The dangerous interaction in Bakery is therefore between a
-  thread's doorway \emph{writes} and the spin-loop's \emph{reads of other
-  threads' flags and labels}. If $P_i$'s store of
-  $\texttt{flag}[i] = \texttt{true}$ is still in its buffer when $P_j$
-  reaches its check for $k=i$, $P_j$ may read $\texttt{flag}[i] =
-  \texttt{false}$, and Step~3 of the ME proof breaks.
+  Two store-load hazards together threaten the ME proof, and both are needed
+  for safety on x86.
 
-  The minimal fix is a single store-load fence (e.g., \ppinline{mfence} on
-  x86) after the doorway writes and before the spin loop, forcing each
-  thread's doorway writes to drain to memory before it begins reading other
-  threads' state. No fence is needed between (D1) and (D2).}
+  \emph{(a) Cross-thread visibility of \texttt{flag}.} If $P_j$ reaches its
+  spin-loop check for $k=i$ while $P_i$'s store of
+  $\texttt{flag}[i] = \texttt{true}$ is still in $P_i$'s store buffer, $P_j$
+  reads $\texttt{flag}[i] = \texttt{false}$ and Step~3 of the ME proof
+  fails. The remedy is to drain $P_i$'s flag store as early as possible: a
+  fence right after line~(D1) ensures $\texttt{flag}[i] = \texttt{true}$ is
+  globally visible before $P_i$ does anything else.
+
+  \emph{(b) Self store-load reordering at the spin boundary.} Without a
+  fence, $P_i$'s own loads of $\texttt{flag}[k]$ in the spin loop can be
+  reordered before $P_i$'s own doorway stores have drained, producing a
+  Dekker-style violation in which $P_i$ reads $\texttt{flag}[k] =
+  \texttt{false}$ even though $P_k$ has already published a label larger
+  than $L_i$. A second fence after line~(D2) and before the spin loop
+  closes this gap.
+
+  Putting the two together, the canonical TSO-safe layout is
+
+  \medskip
+  \noindent
+  \ttfamily\small
+  flag[i]\ \ = true;\hfill // (D1)\\
+  \hphantom{flag[i]\ \ = true;\ }mfence;\hfill // drain (D1)\\
+  label[i] = max(...) + 1;\hfill // (D2)\\
+  \hphantom{flag[i]\ \ = true;\ }mfence;\hfill // before spin\\
+  while (\,for some k:\, flag[k] \&\& (label[i],i) > (label[k],k));\hfill // (W)
+  \rmfamily
+
+  \medskip
+  The first \ppinline{mfence} forces $\texttt{flag}[i]$ to be globally
+  visible well before $P_i$'s label is published; the second forces all of
+  $P_i$'s doorway stores to be visible before $P_i$ begins to observe
+  others. On weaker models (PowerPC, ARM), additional store-store fences
+  may be needed inside~(D2)'s max-scan; under TSO they are not.}
 
   \ppexercise{Every thread scans all $n$ labels in both the doorway (to compute
   the max) and the while loop. Is this $O(n)$ cost per operation inherent? What

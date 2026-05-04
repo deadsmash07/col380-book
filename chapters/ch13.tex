@@ -1,0 +1,647 @@
+% ch13.tex — Lecture 13: The Bakery Algorithm (13 February 2026)
+% Scribe: Group 17
+
+% Local theorem/lemma/proof environments (amsthm is not loaded in main.tex).
+\newtheorem{theorem}{Theorem}[chapter]
+\newtheorem{lemma}[theorem]{Lemma}
+\newenvironment{proof}[1][Proof]{%
+  \par\noindent\textit{#1.}\enspace\ignorespaces
+}{%
+  \hfill$\square$\par\medskip
+}
+
+\chapter{Lecture 13: The Bakery Algorithm}
+
+\section{Recap: Where We Left Off}
+
+In the previous lecture, we studied Peterson's algorithm for 2-thread mutual
+exclusion. We showed that it satisfies mutual exclusion, deadlock-freedom,
+starvation-freedom, and bounded waiting (with $r = 1$). We then raised the
+question: can we solve mutual exclusion for $n$ threads? The answer is the
+\ppterm{Bakery Algorithm}, which we introduced briefly at the end of Lecture~12.
+This lecture picks up from there and focuses on proving its correctness.
+
+\section{The Bakery Algorithm}
+
+The Bakery Algorithm, due to Lamport (1974), is a classical $n$-thread mutual
+exclusion protocol. The intuition is simple: it works like a bakery where
+customers take numbered tickets and are served in order. Each thread picks a
+label (ticket number) and waits until it holds the smallest label among all
+interested threads.
+
+\subsection{Data Structures and Code}
+
+The algorithm maintains two shared arrays:
+\begin{itemize}[nosep]
+  \item \ppinline{flag[0..n-1]}: a boolean array indicating whether thread $i$
+        is interested in entering the critical section.
+  \item \ppinline{label[0..n-1]}: an integer array storing the ticket number
+        (label) of each thread.
+\end{itemize}
+
+The pseudocode is as follows:
+\clearpage
+\begin{ppprogram}{Bakery Algorithm (Herlihy-Shavit formulation)}{prog:bakery}
+\begin{lstlisting}[language=Java]
+class Bakery implements Lock {
+  boolean[] flag;
+  Label[]   label;
+
+  public Bakery(int n) {
+    flag  = new boolean[n];
+    label = new Label[n];
+    for (int i = 0; i < n; i++) {
+      flag[i] = false; label[i] = 0;
+    }
+  }
+
+  public void lock() {
+    flag[i]  = true;                               // (D1)
+    label[i] = max(label[0], ..., label[n-1]) + 1; // (D2)
+    while (for some k:                              // (W)
+      flag[k] && (label[i], i) > (label[k], k));
+  }
+
+  public void unlock() {
+    flag[i] = false;
+  }
+}
+\end{lstlisting}
+\end{ppprogram}
+
+\subsection{Structure of \ppinline{lock()}}
+
+The \ppinline{lock()} method naturally splits into two phases:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Doorway} (finite steps, lines D1--D2): The thread sets its flag
+        and computes its label. This always terminates in a bounded number of
+        steps.
+  \item \textbf{Waiting} (potentially unbounded, line W): The thread spins in
+        the \ppinline{while} loop until no other interested thread holds a
+        lexicographically smaller (\ppinline{label}, id) pair.
+\end{enumerate}
+
+The waiting condition checks, for every other thread $k$: is $k$ interested
+(\ppinline{flag[k]} is true) \emph{and} does $k$ have a smaller label (breaking
+ties by thread id)? The comparison $(l_1,\mathit{id}_1) < (l_2,\mathit{id}_2)$
+is lexicographic: first compare labels, and if equal, compare thread ids.
+
+More precisely, thread $i$ exits the while loop and enters the CS only when,
+for \emph{every} thread $k$:
+\[
+  \neg\,\texttt{flag}[k]
+  \quad \lor \quad
+  (\texttt{label}[i],\, i) \;\leq\; (\texttt{label}[k],\, k).
+\]
+That is, every other thread is either not interested, or has a label at least
+as large as $i$'s (with tie-breaking by id).
+
+\begin{ppnote}
+\par
+The version presented in class follows Herlihy and Shavit's textbook
+formulation. Lamport's original 1974 algorithm uses a separate
+\ppinline{choosing[i]} boolean variable (set to \ppinline{true} while thread
+$i$ is computing its label, then reset to \ppinline{false}), and other threads
+explicitly wait with \ppinline{while(choosing[j])} before inspecting $j$'s
+label. Lamport's original also resets \ppinline{number[i] = 0} on unlock,
+rather than using a separate flag.
+
+In the Herlihy-Shavit version, \ppinline{flag[i]} is set to \ppinline{true}
+\emph{before} the label is computed. This means any thread that sees
+\ppinline{flag[i] = true} knows that thread $i$ is either still computing its
+label or has already finished---in either case it is ``in the game,'' and other
+threads account for it during the while-loop scan. The correctness argument
+below relies on this write ordering and on sequential consistency (SC).
+\end{ppnote}
+
+\section{Does the Bakery Algorithm Guarantee Mutual Exclusion?}
+
+This was the central question of today's lecture. We worked through it carefully.
+
+\subsection{A Concrete Trace}
+
+To build intuition, consider two threads $T_0$ and $T_1$ whose doorways
+overlap so that both end up choosing the same label value. (If $T_0$'s
+entire doorway completed before $T_1$ began, Lemma~\ref{lem:label-order}
+would force $T_1$ to choose label 2, not 1. The interesting case is when
+both threads' max-scans run before either label has been written.)
+
+\begin{enumerate}[nosep]
+  \item $T_0$ sets \ppinline{flag[0] = true} (line~D1) and starts its
+        max-scan; it reads \ppinline{label[1] = 0} (the initial value).
+  \item $T_1$ sets \ppinline{flag[1] = true} and starts its max-scan; it
+        reads \ppinline{label[0] = 0} (still the initial value, since $T_0$
+        has not reached line~D2 yet).
+  \item $T_0$ finishes its scan with $\max=0$ and writes
+        \ppinline{label[0] = 1}.
+  \item $T_1$ finishes its scan with $\max=0$ and writes
+        \ppinline{label[1] = 1}.
+  \item $T_0$ enters the while loop and checks $k=1$: it reads
+        \ppinline{flag[1] = true} and evaluates $(1, 0) > (1, 1)$, which is
+        \textbf{false} (since $0 < 1$). The blocking conjunction is false,
+        so $T_0$ enters the CS.
+  \item $T_1$ enters the while loop and checks $k=0$: it reads
+        \ppinline{flag[0] = true} and evaluates $(1, 1) > (1, 0)$, which is
+        \textbf{true}. The blocking conjunction is true, so $T_1$ waits.
+  \item $T_0$ finishes its critical section and sets
+        \ppinline{flag[0] = false}.
+  \item $T_1$ re-checks: \ppinline{flag[0]} is now \texttt{false}. The
+        conjunction is false, so $T_1$ exits the loop and enters the CS.
+\end{enumerate}
+
+Even when both threads end up with the same label value, tie-breaking by
+thread id ensures a total order and prevents simultaneous CS entry.
+
+\subsection{Handling Concurrent Label Assignment}
+
+\begin{ppkey}
+\par
+The label assignment is \emph{not} atomic. Two threads can concurrently compute
+the same label value. This is fine: the lexicographic comparison $(\text{label},
+\text{id})$ always breaks ties deterministically, since thread ids are unique.
+\end{ppkey}
+
+For instance, $P_1$ and $P_2$ might both compute label 1. Since $(1,1) < (1,2)$,
+there is always a strict total order among (label, id) pairs.
+
+More generally, suppose $P_1$ enters the CS first. Then from $P_1$'s perspective,
+it observed $(k_1, 1) < (k_2, 2)$ for some label values $k_1, k_2$. From
+$P_2$'s perspective, it needs $(m_2, 2) < (m_1, 1)$ to enter. Note that
+$k_1, k_2$ and $m_1, m_2$ need not be the same values: these are the label
+values as seen at different points in time. The key insight is that the
+lexicographic ordering, combined with the structure of the algorithm, still
+prevents simultaneous access.
+
+\section{Formal Proof of Mutual Exclusion}
+
+We now establish the correctness of the Bakery Algorithm rigorously. The proof
+below follows the lecture, with some steps made more explicit after
+cross-checking with standard references (Herlihy \& Shavit's textbook,
+Lamport's original paper, Garg's textbook, and Shankar's notes).
+
+Throughout, we assume \textbf{sequential consistency} (SC): all memory
+operations appear to execute in some global total order consistent with the
+program order of each thread, and every read returns the value of the most
+recent write in that total order.
+
+\subsection{Lemma: Doorway Order Implies Label Order}
+
+To turn doorway timing into label arithmetic, we need a hypothesis strong
+enough that $P_j$'s entire max-scan---not just its label-write---happens after
+$P_i$'s label is in place. The right precondition is the ordering of the
+\emph{doorway} of one thread relative to the \emph{start of the doorway} of
+the other (this is the form Lamport states in his original 1974 paper, and is
+the FCFS lemma in Herlihy and Shavit).
+
+\begin{lemma}\label{lem:label-order}
+If thread $P_i$'s doorway (lines D1 and D2) completes strictly before thread
+$P_j$'s doorway begins, then $L_j > L_i$, and hence
+$(L_j, j) > (L_i, i)$.
+\end{lemma}
+
+\begin{proof}
+By hypothesis, $P_j$'s doorway begins after $P_i$'s doorway has completed. So
+every step of $P_j$'s doorway, including every read in its max-scan, happens
+after $P_i$'s write of $\texttt{label}[i] = L_i$ in line~(D2). Under SC, $P_j$'s
+read of $\texttt{label}[i]$ therefore returns $L_i$ (the most recent write,
+since $P_i$ writes $\texttt{label}[i]$ exactly once per lock acquisition and
+has not yet started a new acquisition). Hence
+\[
+  L_j \;=\; \max(\ldots,L_i,\ldots) + 1 \;\geq\; L_i + 1 \;>\; L_i,
+\]
+which gives $(L_j, j) > (L_i, i)$ regardless of the ids.
+\end{proof}
+
+\begin{ppnote}
+\par
+The weaker hypothesis ``\emph{$P_i$ completes its label-write before $P_j$
+completes its label-write}'' is \emph{not} enough on its own: $P_j$'s
+max-scan can race in the middle of $P_i$'s doorway and read a stale
+$\texttt{label}[i]$, producing $L_j \leq L_i$ even though $P_i$'s write
+finishes first. This is why the lemma talks about doorways, not label
+writes. The mutual exclusion proof below is structured to use only the
+doorway form.
+\end{ppnote}
+
+\subsection{Theorem: Mutual Exclusion is Guaranteed}
+
+\begin{theorem}\label{thm:me}
+The Bakery Algorithm satisfies mutual exclusion.
+\end{theorem}
+
+\begin{proof}
+Suppose for contradiction that, at some time $T$, threads $P_i$ and $P_j$ are
+simultaneously in the CS. We consider one specific lock acquisition for each
+of them (the one that placed them in the CS at time $T$) and write $L_i$,
+$L_j$ for the labels chosen by those acquisitions.
+
+\medskip
+\noindent\textbf{Step 1: Establish a label ordering (WLOG).}
+Since thread ids are distinct, $(L_i, i) \neq (L_j, j)$. Without loss of
+generality, assume $(L_i, i) < (L_j, j)$. The plan is to derive a
+contradiction by examining what $P_j$ must have observed in its waiting loop.
+
+\medskip
+\noindent\textbf{Step 2: $P_j$ must have observed $\texttt{flag}[i] = \texttt{false}$.}
+For $P_j$ to have exited the while loop and entered the CS, it must have
+found, at some final test $k=i$, that the blocking condition is false:
+\[
+  \neg\,\texttt{flag}[i] \;\;\lor\;\; (L_j, j) \,\leq\, (\texttt{label}[i], i).
+\]
+The second disjunct, were $P_j$ to read the value $L_i$, would give
+$(L_j, j) \leq (L_i, i)$, contradicting Step~1. The same disjunct is
+false for any value $\ell \leq L_i$ that $P_j$ could read in
+$\texttt{label}[i]$, since then $(L_j, j) \leq (\ell, i) \leq (L_i, i)$
+again contradicts Step~1. (And $\ell \leq L_i$ for every value $P_j$ can
+read: in the Herlihy-Shavit formulation, $\texttt{label}[i]$ is never
+reset, so the writes by $P_i$'s successive acquisitions form a strictly
+increasing sequence; the current acquisition's $L_i$ is the maximum
+written so far, and any earlier read returns either $0$ or a strictly
+smaller previous label.) So the disjunct that must hold is the first
+one: $P_j$ observed $\texttt{flag}[i] = \texttt{false}$ at its final
+test for $k=i$.
+
+\medskip
+\noindent\textbf{Step 3: $P_j$'s observation forces $D_j \to D_i$.}
+Because $P_i$ is in the CS at time $T$, it has not executed its
+\ppinline{unlock()} yet. So between the moment $P_i$ wrote
+$\texttt{flag}[i] = \texttt{true}$ in line~(D1) and time $T$, the value of
+$\texttt{flag}[i]$ is continuously \ppinline{true}. The only way for $P_j$ to
+have read $\texttt{flag}[i] = \texttt{false}$ is for $P_j$'s read to have
+happened \emph{before} $P_i$'s write of $\texttt{flag}[i] = \texttt{true}$,
+i.e., before $P_i$'s doorway began.
+
+But $P_j$'s read of $\texttt{flag}[i]$ sits in $P_j$'s waiting loop, which
+executes only after $P_j$'s doorway has completed. Combining,
+\[
+  (\text{$P_j$'s doorway completes}) \;\to\; (\text{$P_j$'s read})
+  \;\to\; (\text{$P_i$'s doorway begins}),
+\]
+i.e., $D_j \to D_i$: $P_j$'s doorway ends strictly before $P_i$'s begins.
+
+\medskip
+\noindent\textbf{Step 4: Apply the Lemma to obtain a contradiction.}
+By Lemma~\ref{lem:label-order} applied with $P_j$ as the earlier thread and
+$P_i$ as the later thread, $L_i > L_j$, hence $(L_i, i) > (L_j, j)$. But
+Step~1 assumed $(L_i, i) < (L_j, j)$, contradiction.
+\end{proof}
+
+\begin{ppnote}
+\par
+The slides express the contradiction more compactly as
+``$(L_j, j) > (L_i, i) \wedge (L_j, j) < (L_i, i)$.'' The first conjunct is
+the WLOG assumption from Step~1; the second comes from $P_j$'s observation,
+once we have argued (Step~3) that $P_j$ cannot in fact have seen
+$\texttt{flag}[i] = \texttt{false}$ \emph{after} $P_i$'s flag-write. The
+critical content of the proof is therefore Step~3, which the slides leave
+implicit.
+\end{ppnote}
+
+\subsection{Why the Proof Works: Three Key Ingredients}
+
+It is worth stepping back and noting what makes the argument go through:
+
+\begin{enumerate}[nosep]
+  \item \textbf{Lexicographic ordering gives a total order.} Unique thread ids
+        ensure no two threads ever share the same (label, id) pair, even when
+        their label values are equal. This guarantees a well-defined ``winner''
+        in every pairwise comparison and is what licenses the WLOG step.
+  \item \textbf{Disjoint doorways force label growth}
+        (Lemma~\ref{lem:label-order}). Under SC, if one doorway finishes
+        before another begins, the later thread's max-scan must read the
+        earlier thread's freshly-written label and choose a strictly larger
+        label. This is the bridge from real-time ordering of doorways to the
+        algorithm's logical ordering of labels.
+  \item \textbf{The flag persists from doorway through CS.}
+        \ppinline{flag[i]} is set in line~(D1) and only cleared on
+        \ppinline{unlock()}. So while $P_i$ is in the CS, its flag is
+        continuously \ppinline{true}; any other thread that observes
+        $\texttt{flag}[i] = \texttt{false}$ must have read it \emph{before}
+        $P_i$'s doorway began. This is what lets us turn $P_j$'s
+        ``\texttt{flag}$[i] = \texttt{false}$'' observation into the
+        doorway ordering $D_j \to D_i$.
+\end{enumerate}
+
+If any of these three ingredients were missing, the proof would break.
+
+\subsection{Why \ppinline{flag[i]} is Set Before the Label (and Why It Matters)}
+
+A natural question is: what if the order of lines (D1) and (D2) were swapped,
+so we compute the label first and then set the flag? This breaks mutual
+exclusion outright.
+
+\begin{pppitfall}
+\par
+With the doorway ``label first, flag second,'' another thread can scan, see
+$\texttt{flag}[i] = \texttt{false}$ during the gap between $i$'s label-write
+and $i$'s flag-write, and enter the CS even though $i$ has already chosen its
+label. Step~3 of the proof above silently relies on the flag being set before
+the label.
+\end{pppitfall}
+
+\noindent
+A concrete two-thread violation. Initially $\texttt{flag}[\cdot] = \texttt{false}$
+and $\texttt{label}[\cdot] = 0$. Both threads use the swapped doorway, and ids
+satisfy $i < j$.
+
+\begin{enumerate}[nosep,leftmargin=2.2em]
+  \item $P_i$ reads $\max(\ldots) = 0$ in its (now leading) max-scan and
+        writes $\texttt{label}[i] = 1$. (\textit{$P_i$'s flag is still
+        \texttt{false}}.)
+  \item $P_j$ reads $\max(\ldots) = 1$ (it sees $i$'s new label) and writes
+        $\texttt{label}[j] = 2$.
+  \item $P_j$ writes $\texttt{flag}[j] = \texttt{true}$ and enters the while
+        loop. For $k=i$, it reads $\texttt{flag}[i] = \texttt{false}$
+        (\textit{$P_i$ has not reached its flag-write yet}); the conjunction is
+        false, so $P_j$ skips $i$. $P_j$ has no other threads to wait on, so
+        $P_j$ enters the CS.
+  \item $P_i$ writes $\texttt{flag}[i] = \texttt{true}$ and enters the while
+        loop. For $k=j$ it reads $\texttt{flag}[j] = \texttt{true}$ and
+        $\texttt{label}[j] = 2$, and checks $(L_i, i) > (L_j, j)$, i.e.,
+        $(1, i) > (2, j)$, which is false. $P_i$ also enters the CS.
+\end{enumerate}
+
+Both $P_i$ and $P_j$ are now in the CS at the same time. The bug is that the
+gap between (the swapped) label-write and flag-write is observable: $P_j$ saw
+$i$ as ``not interested'' even though $i$ was already mid-doorway. With the
+correct order (D1) before (D2), $P_i$'s flag is set before $i$'s label is
+written, so any other thread that sees $i$'s label or scans during $i$'s
+doorway necessarily also sees $\texttt{flag}[i] = \texttt{true}$, and Step~3
+of the mutual-exclusion proof goes through.
+
+\section{Deadlock-Freedom}
+
+\begin{ppkey}
+\par
+At any point, the interested thread with the smallest (label, id) pair cannot
+be blocked by anyone: for every other thread $k$, either \ppinline{flag[k]} is
+false or $(\texttt{label}[k], k) \geq (\texttt{label}[i], i)$. So it always
+enters the CS, and deadlock is impossible.
+\end{ppkey}
+
+Consider any moment at which some thread is interested in entering the CS.
+Each interested thread is in one of two states: still inside its doorway
+(executing the bounded sequence (D1)--(D2)) or in the spin loop. Doorways are
+straight-line code with no waiting, so any thread in its doorway will, in a
+finite number of its own steps, transition into the spin loop. Suppose for
+contradiction that the system is deadlocked, i.e., no thread ever enters the
+CS again. Then after finitely many steps, no thread is making progress in its
+doorway either, so every interested thread has reached the spin loop and is
+stuck there with a well-defined (label, id) pair.
+
+Among these stuck threads, pick the one with the smallest (label, id) pair;
+call it $P_i$. For every other interested thread $k$, either
+$\texttt{flag}[k] = \texttt{false}$ (and $P_i$ skips it) or
+$(\texttt{label}[k], k) > (\texttt{label}[i], i)$. In both cases, the blocking
+conjunction $\texttt{flag}[k] \wedge (\texttt{label}[i], i) >
+(\texttt{label}[k], k)$ is false. So $P_i$'s next pass through the spin
+loop sees no blocker and enters the CS, contradicting our assumption. In
+short: at any point, the smallest-ticketed thread always makes progress.
+
+\section{First-Come-First-Served (FCFS)}
+
+The Bakery Algorithm satisfies FCFS, corresponding to bounded waiting with
+$r=0$ in the terminology from Lecture~12. Suppose thread $A$ completes its
+doorway before thread $B$ starts its doorway ($D_A \to D_B$). By
+Lemma~\ref{lem:label-order}, $(L_A, A) < (L_B, B)$.
+
+We must show $A$ enters the CS no later than $B$ for these acquisitions. Two
+cases:
+
+\begin{itemize}[nosep,leftmargin=2.2em]
+  \item $A$ has already entered (and possibly even left) the CS by the time $B$
+        starts spinning. Then trivially $A$ entered before $B$, and FCFS holds.
+  \item $A$ is still in the doorway-or-CS region when $B$ starts spinning.
+        Then $\texttt{flag}[A] = \texttt{true}$ continuously throughout
+        $B$'s relevant test, and $\texttt{label}[A] = L_A$, so $B$'s check for
+        $k=A$ reads $\texttt{flag}[A] = \texttt{true}$ together with
+        $(L_B, B) > (L_A, A)$, and $B$ blocks. $A$, on the other hand, either
+        already passed all its checks (so it is in the CS) or, when it
+        eventually checks $k=B$, sees $(L_A, A) < (L_B, B)$ and is therefore
+        not blocked by $B$. So $A$ enters the CS first.
+\end{itemize}
+
+In both cases $A$ enters before $B$: no later-arriving thread can overtake an
+earlier one even once after the earlier thread has finished its doorway, which
+is exactly bounded waiting with $r=0$.
+
+\section{Summary and Looking Ahead}
+
+The Bakery Algorithm achieves $n$-thread mutual exclusion using only shared reads
+and writes---no hardware atomics like CAS or TAS are needed.
+
+\begin{ppnote}
+\par
+Practical limitations to be aware of: (1)~Labels grow without bound and can
+overflow; bounded variants such as the Black-White Bakery algorithm exist but
+are more complex. (2)~Each lock/unlock requires $O(n)$ reads, making it
+impractical for large $n$. (3)~The algorithm uses $O(n)$ shared registers with
+a ``single-writer'' property: each thread writes only to its own
+\ppinline{flag[i]} and \ppinline{label[i]}, while others only read them.
+(4)~The algorithm assumes sequential consistency; weaker models such as TSO
+require an explicit store-load fence between each thread's doorway writes
+and its spin-loop reads (see the TSO exercise below).
+\end{ppnote}
+
+\section{Exercises}
+
+\begin{ppexercises}
+
+  \ppexercise{Why can't we replace \ppinline{flag[i]} with the check
+  \ppinline{label[i] != 0}? Construct a concrete counterexample showing how
+  mutual exclusion could be violated.
+
+  \medskip
+  \noindent\textit{Answer.}
+  In the Herlihy-Shavit version (without \ppinline{flag}), the interest
+  indicator becomes ``\ppinline{label[k] != 0}.'' The problem is that during
+  thread $i$'s doorway, after $i$ has read others' labels but before $i$
+  writes its own, $\texttt{label}[i]$ is still $0$, so other threads regard
+  $i$ as ``not interested.''
+
+  Concretely, with $i < j$ and all values initialized to $0$:
+  \begin{enumerate}[nosep,leftmargin=2.2em]
+    \item $P_i$ runs its max-scan to completion, reading
+          $\texttt{label}[j] = 0$ (the initial value, since $P_j$ has not
+          written yet). $P_i$ has decided $\max = 0$ but defers the
+          $\texttt{label}[i] = 1$ write momentarily.
+    \item $P_j$ runs its max-scan, reading
+          $\texttt{label}[i] = 0$ (still the initial value, since $P_i$ has
+          not yet written). $P_j$ writes $\texttt{label}[j] = 1$.
+    \item $P_j$ enters the while loop. The check for $k=i$ reads
+          $\texttt{label}[i] = 0$, so the blocking conjunction is false; $P_j$
+          enters the CS.
+    \item $P_i$ now writes $\texttt{label}[i] = 1$ (using the $\max=0$ it
+          decided in step~1).
+    \item $P_i$ enters the while loop. The check for $k=j$ reads
+          $\texttt{label}[j] = 1$ and evaluates $(1, i) > (1, j)$, which is
+          \textbf{false} since $i < j$. $P_i$ also enters the CS.
+  \end{enumerate}
+  Both threads are now in the CS simultaneously, violating ME. The
+  \ppinline{flag} array (set \emph{before} the label-write in line~D1) closes
+  this gap: any thread seen mid-doorway is already visible to scanners as
+  ``interested,'' even before its label is published.}
+
+  \ppexercise{Two threads $T_3$ and $T_7$ both compute label value 5. Which
+  enters the CS first, and why?
+
+  \medskip
+  \noindent\textit{Answer.}
+  The algorithm uses lexicographic comparison on (label, thread\_id). Since both
+  have label 5, we compare ids: $3 < 7$, so $(5, 3) < (5, 7)$. Thread $T_3$ has
+  the smaller pair and enters first. Thread $T_7$ waits until $T_3$'s flag
+  becomes false.}
+
+  \ppexercise{Peterson's algorithm uses a shared \ppinline{victim} variable
+  written by all threads. The Bakery algorithm does not. Why does this
+  ``single-writer'' property matter, and how strong a guarantee does it buy?
+
+  \medskip
+  \noindent\textit{Answer.}
+  Two formulations need to be kept distinct.
+
+  In the Herlihy--Shavit formulation used in this lecture, each thread writes
+  only to its own \ppinline{flag[i]} and \ppinline{label[i]}; other threads
+  only read them. The proof above assumes \emph{atomic} registers, in which
+  every read or write appears to take effect at a single instant. Under this
+  assumption, the single-writer property is mostly an architectural
+  convenience: it sidesteps multi-writer race semantics entirely.
+
+  Lamport's 1974 algorithm (which uses \ppinline{choosing[i]} and resets
+  \ppinline{number[i] = 0} on unlock) is correct under a strictly weaker
+  hardware model. Lamport proved it works with merely \emph{safe} registers: a
+  read that is concurrent with a write to the same location may return any
+  value the register can hold, while a read that does not overlap any write
+  returns the value most recently written. Single-writer is what makes this
+  possible---there is no second writer for a concurrent read to disagree
+  with. Peterson's \ppinline{victim} register is multi-writer and so does not
+  enjoy this property.
+
+  Bottom line: in the simplified textbook version we use, the single-writer
+  property is mainly hygienic; in Lamport's original version it is what
+  enables the strongest known register-level correctness result for $n$-thread
+  software mutual exclusion.}
+
+  \ppexercise{The proof structures the contradiction around the doorway
+  ordering $D_j \to D_i$. Could the two doorways have completed
+  ``simultaneously'' under SC?
+
+  \medskip
+  \noindent\textit{Answer.}
+  No. SC totally orders every memory access in a single global order, so the
+  flag-writes and label-writes of $P_i$ and $P_j$ all sit at distinct points
+  in that order---one of $D_i$ ends strictly before or strictly after the
+  other ends, and likewise for the starts. The proof only needs the strict
+  ordering ``$D_j$ ends before $D_i$ begins'' (used by
+  Lemma~\ref{lem:label-order}), which is well-defined precisely because SC
+  totalizes events. Under weaker models (e.g., release/acquire without
+  additional fences), there is no global total order on independent writes,
+  and the lemma's appeal to ``the most recent write'' loses its meaning.}
+
+  \ppexercise{Labels in the Bakery algorithm grow without bound. Can we fix
+  this by resetting all labels to 0 when the CS is empty?
+
+  \medskip
+  \noindent\textit{Answer.}
+  This is tempting but dangerous. The problem is that checking ``the CS is
+  empty'' and resetting labels is not atomic. While one thread is resetting
+  labels, another might be in its doorway reading them, leading to
+  inconsistencies. Any fix along these lines requires its own synchronization,
+  which defeats the purpose. The standard approach to bounding labels is the
+  Black-White Bakery algorithm (Taubenfeld, 2004), which uses one extra shared
+  bit to ``color'' rounds and allows labels to wrap around a bounded range. It
+  preserves all correctness properties but is more complex.}
+
+  \ppexercise{Does the Bakery algorithm work under the TSO (Total Store Order)
+  memory model used by x86 processors? Where exactly do fences need to go?
+
+  \medskip
+  \noindent\textit{Answer.}
+  Not directly, and the broken ordering is more specific than ``stores aren't
+  visible.'' Under TSO, stores by a single thread are made globally visible in
+  program order: store-store ordering is preserved for free. So the proof's
+  reliance on $\texttt{flag}[i] = \texttt{true}$ becoming visible \emph{before}
+  $\texttt{label}[i] = L_i$ does \emph{not} require a fence between (D1) and
+  (D2).
+
+  What TSO does \emph{not} preserve is store-load ordering: a thread's own
+  pending stores can sit in its store buffer while the same thread issues
+  later loads, and other CPUs may keep observing the old value until the
+  buffer drains. The dangerous interaction in Bakery is therefore between a
+  thread's doorway \emph{writes} and the spin-loop's \emph{reads of other
+  threads' flags and labels}. If $P_i$'s store of
+  $\texttt{flag}[i] = \texttt{true}$ is still in its buffer when $P_j$
+  reaches its check for $k=i$, $P_j$ may read $\texttt{flag}[i] =
+  \texttt{false}$, and Step~3 of the ME proof breaks.
+
+  The minimal fix is a single store-load fence (e.g., \ppinline{mfence} on
+  x86) after the doorway writes and before the spin loop, forcing each
+  thread's doorway writes to drain to memory before it begins reading other
+  threads' state. No fence is needed between (D1) and (D2).}
+
+  \ppexercise{Every thread scans all $n$ labels in both the doorway (to compute
+  the max) and the while loop. Is this $O(n)$ cost per operation inherent? What
+  is the relevant lower bound?
+
+  \medskip
+  \noindent\textit{Answer.}
+  Two related lower bounds need to be kept apart.
+  \begin{itemize}[nosep,leftmargin=2.2em]
+    \item \textbf{Space.} Burns and Lynch (1980) showed that any $n$-thread
+          mutual exclusion algorithm using only reads and writes to shared
+          registers must use at least $n$ distinct shared locations. So
+          Bakery's $O(n)$ shared registers are space-optimal up to a
+          constant; \emph{this is a statement about how many registers
+          exist, not how many a single acquisition reads}.
+    \item \textbf{Per-acquisition reads.} Bakery's $O(n)$ reads per
+          \ppinline{lock()}\,/\,\ppinline{unlock()} pair are structural to
+          the label-comparison strategy: a thread cannot determine its
+          relative position without inspecting every other thread's label
+          and flag. Subsequent work (e.g., Lamport's $1$-bit and fast mutual
+          exclusion algorithms; Yang and Anderson's local-spinning locks)
+          shows that the cost can be reduced in restricted regimes (e.g.,
+          contention-free or local-spin) but not eliminated in the worst
+          case under reads/writes alone.
+  \end{itemize}
+  The practical takeaway is that read-only solutions are unavoidably linear
+  per operation in the worst case, which is why production systems lean on
+  hardware primitives such as TAS/CAS (Lecture~11) to bring the
+  contention-free cost down to $O(1)$.}
+
+\end{ppexercises}
+
+\section*{Contributions}
+
+This scribe was prepared by \textbf{Group 17} as part of the class scribe
+rotation for \textit{Introduction to Parallel \& Distributed Programming}.
+
+\bigskip
+\renewcommand{\arraystretch}{1.4}
+\begin{tabularx}{\textwidth}{|p{0.30\textwidth}|p{0.20\textwidth}|X|}
+\hline
+\textbf{Name} & \textbf{Entry Number} & \textbf{Contribution} \\
+\hline
+Arnav Raj & 2022CS51652 & Overall structure, proof verification against
+literature, exercises and answers, final editing \\
+\hline
+Kushagar Garg & 2022CS11088 & Exercise and discussion questions, sketching the
+overall layout, editing in different sections \\
+\hline
+Irfan Hussain & 2022CS51146 & Reviewed the final transcript and made
+corrections to improve clarity and readability \\
+\hline
+Meda Sadvik & 2023CS11097 & Assisted with minor formatting adjustments and
+reviewed selected sections for consistency \\
+\hline
+Eeshan Anshuman Yadav & 2023CS50917 & Contributed to initial reading of lecture
+material and provided brief feedback on explanations \\
+\hline
+\end{tabularx}
+
+\bigskip
+\noindent All group members reviewed the final draft for correctness and
+clarity. The mutual exclusion proof was cross-checked against Lamport's
+original 1974 paper, the Herlihy \& Shavit textbook (\textit{The Art of
+Multiprocessor Programming}), Garg's textbook (\textit{Concurrent and
+Distributed Computing in Java}), and Shankar's lecture notes (UMD CMSC~412).

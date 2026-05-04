@@ -234,7 +234,11 @@ The Bakery Algorithm satisfies mutual exclusion.
 Suppose for contradiction that, at some time $T$, threads $P_i$ and $P_j$ are
 simultaneously in the CS. We consider one specific lock acquisition for each
 of them (the one that placed them in the CS at time $T$) and write $L_i$,
-$L_j$ for the labels chosen by those acquisitions.
+$L_j$ for the labels chosen by those acquisitions. We adopt the standard
+well-formedness assumption (Lamport 1974; Herlihy and Shavit, Section~2.6):
+no thread invokes \ppinline{lock()} again before completing the matching
+\ppinline{unlock()}. So $\texttt{flag}[i]$ and $\texttt{label}[i]$ have a
+single ``current'' value belonging to this acquisition until $P_i$ unlocks.
 
 \medskip
 \noindent\textbf{Step 1: Establish a label ordering (WLOG).}
@@ -588,26 +592,31 @@ and its spin-loop reads (see the TSO exercise below).
   \noindent\textit{Answer.}
   Two related lower bounds need to be kept apart.
   \begin{itemize}[nosep,leftmargin=2.2em]
-    \item \textbf{Space.} Burns and Lynch (1980) showed that any $n$-thread
-          mutual exclusion algorithm using only reads and writes to shared
-          registers must use at least $n$ distinct shared locations. So
-          Bakery's $O(n)$ shared registers are space-optimal up to a
-          constant; \emph{this is a statement about how many registers
-          exist, not how many a single acquisition reads}.
+    \item \textbf{Space.} Burns and Lynch
+          (\emph{Information and Computation}, 1993; preliminary version
+          Allerton 1980) showed that any $n$-thread mutual exclusion
+          algorithm using only reads and writes to shared registers must
+          use at least $n$ distinct shared locations. So Bakery's $O(n)$
+          shared registers are space-optimal up to a constant;
+          \emph{this is a statement about how many registers exist, not
+          how many a single acquisition reads}.
     \item \textbf{Per-acquisition reads.} Bakery's $O(n)$ reads per
           \ppinline{lock()}\,/\,\ppinline{unlock()} pair are structural to
-          the label-comparison strategy: a thread cannot determine its
+          its label-comparison strategy: a thread cannot determine its
           relative position without inspecting every other thread's label
-          and flag. Subsequent work (e.g., Lamport's $1$-bit and fast mutual
-          exclusion algorithms; Yang and Anderson's local-spinning locks)
-          shows that the cost can be reduced in restricted regimes (e.g.,
-          contention-free or local-spin) but not eliminated in the worst
-          case under reads/writes alone.
+          and flag. \emph{This $O(n)$ scan is a property of Bakery, not
+          of read/write algorithms in general.} Lamport's fast mutual
+          exclusion algorithm (1987) achieves $O(1)$ accesses per
+          contention-free acquisition using only reads and writes; Yang
+          and Anderson's local-spin algorithms reduce remote memory
+          references in NUMA settings without using read--modify--write
+          primitives.
   \end{itemize}
-  The practical takeaway is that read-only solutions are unavoidably linear
-  per operation in the worst case, which is why production systems lean on
-  hardware primitives such as TAS/CAS (Lecture~11) to bring the
-  contention-free cost down to $O(1)$.}
+  Practically, the linear scan is the price Bakery pays for being
+  conceptually simple and provably correct under SC; production systems
+  use hardware primitives such as TAS/CAS (Lecture~11) for low
+  contention-free cost, or fast/local-spin software locks when atomic
+  primitives are unavailable.}
 
 \end{ppexercises}
 
